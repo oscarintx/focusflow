@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FocusFlow — Smart Planner for Students</title>
+  <meta name="description" content="A smart daily planner that tells busy students what to do right now." />
+  <meta name="theme-color" content="#2C2A25" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #F5F4F0; color: #2C2A25; -webkit-font-smoothing: antialiased; }
+    input, select, button { font-family: inherit; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    const CATEGORIES = {
+      school: { label: "School", color: "#E86B4F", bg: "#FEF0EC" },
+      work: { label: "Work", color: "#4F8FE8", bg: "#ECF2FE" },
+      personal: { label: "Personal", color: "#6B9E5A", bg: "#F0F7EC" },
+    };
+
+    const PRIORITIES = {
+      high: { label: "High", value: 3, color: "#E8504F" },
+      medium: { label: "Medium", value: 2, color: "#E8A24F" },
+      low: { label: "Low", value: 1, color: "#8B9AAF" },
+    };
+
+    const generateId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+    function getSmartScore(task) {
+      if (task.completed) return -1;
+      const now = new Date();
+      const deadline = new Date(task.deadline);
+      const hoursLeft = Math.max(0, (deadline - now) / (1000 * 60 * 60));
+      const daysLeft = hoursLeft / 24;
+      let urgency = 0;
+      if (daysLeft < 0) urgency = 100;
+      else if (daysLeft < 1) urgency = 90;
+      else if (daysLeft < 2) urgency = 70;
+      else if (daysLeft < 3) urgency = 50;
+      else if (daysLeft < 7) urgency = 30;
+      else urgency = 10;
+      const priorityScore = PRIORITIES[task.priority].value * 15;
+      const effortBonus = task.estimatedTime <= 30 ? 10 : task.estimatedTime <= 60 ? 5 : 0;
+      return urgency + priorityScore + effortBonus;
+    }
+
+    function getDeadlineLabel(deadline) {
+      const now = new Date();
+      const dl = new Date(deadline);
+      const diffMs = dl - now;
+      const diffHours = diffMs / (1000 * 60 * 60);
+      const diffDays = diffHours / 24;
+      if (diffMs < 0) return { text: "Overdue", urgent: true };
+      if (diffHours < 1) return { text: "Due within the hour", urgent: true };
+      if (diffHours < 24) return { text: `Due in ${Math.ceil(diffHours)}h`, urgent: true };
+      if (diffDays < 2) return { text: "Due tomorrow", urgent: false };
+      if (diffDays < 7) return { text: `Due in ${Math.ceil(diffDays)} days`, urgent: false };
+      return { text: dl.toLocaleDateString("en-US", { month: "short", day: "numeric" }), urgent: false };
+    }
+
+    function formatTime(minutes) {
+      if (minutes < 60) return `${minutes}m`;
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    }
+
+    const STORAGE_KEY = "focusflow-tasks";
+    const HOURS_KEY = "focusflow-hours";
+
+    function loadTasks() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+      catch { return []; }
+    }
+    function saveTasks(tasks) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch {}
+    }
+    function loadHours() {
+      try { return Number(localStorage.getItem(HOURS_KEY)) || 8; }
+      catch { return 8; }
+    }
+    function saveHours(h) {
+      try { localStorage.setItem(HOURS_KEY, String(h)); } catch {}
+    }
+
+    function TaskCard({ task, onToggle, onDelete, isTopPick }) {
+      const cat = CATEGORIES[task.category];
+      const pri = PRIORITIES[task.priority];
+      const dl = getDeadlineLabel(task.deadline);
+      return (
+        <div style={{
+          background: task.completed ? "#F8F8F6" : "#fff",
+          border: isTopPick && !task.completed ? "2px solid #E86B4F" : "1px solid #E8E6E1",
+          borderRadius: 16, padding: "18px 20px", marginBottom: 10,
+          opacity: task.completed ? 0.55 : 1, transition: "all 0.3s ease",
+          position: "relative", overflow: "hidden",
+        }}>
+          {isTopPick && !task.completed && (
+            <div style={{
+              position: "absolute", top: 0, left: 0, right: 0, height: 3,
+              background: "linear-gradient(90deg, #E8504F, #E8A24F)", borderRadius: "16px 16px 0 0",
+            }} />
+          )}
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+            <button onClick={() => onToggle(task.id)} style={{
+              width: 24, height: 24, borderRadius: 8,
+              border: `2px solid ${task.completed ? "#6B9E5A" : "#D0CCC5"}`,
+              background: task.completed ? "#6B9E5A" : "transparent", cursor: "pointer", flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center", marginTop: 2,
+              transition: "all 0.2s ease",
+            }}>
+              {task.completed && (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M3 7L6 10L11 4" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                {isTopPick && !task.completed && (
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, color: "#E8504F", background: "#FEF0EC",
+                    padding: "2px 8px", borderRadius: 6, letterSpacing: "0.5px", textTransform: "uppercase",
+                  }}>DO THIS NOW</span>
+                )}
+                <span style={{
+                  fontSize: 11, fontWeight: 600, color: cat.color, background: cat.bg,
+                  padding: "2px 8px", borderRadius: 6,
+                }}>{cat.label}</span>
+              </div>
+              <div style={{
+                fontSize: 16, fontWeight: 600, color: task.completed ? "#A09C95" : "#2C2A25",
+                textDecoration: task.completed ? "line-through" : "none",
+                lineHeight: 1.4, marginBottom: 8,
+                fontFamily: "'Instrument Serif', Georgia, serif",
+              }}>{task.name}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{
+                  fontSize: 12, color: dl.urgent ? "#E8504F" : "#8B8680", fontWeight: dl.urgent ? 600 : 400,
+                }}>{dl.text}</span>
+                <span style={{ fontSize: 12, color: "#8B8680" }}>{formatTime(task.estimatedTime)}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{
+                    width: 7, height: 7, borderRadius: "50%", background: pri.color, display: "inline-block",
+                  }} />
+                  <span style={{ fontSize: 12, color: "#8B8680" }}>{pri.label}</span>
+                </span>
+              </div>
+            </div>
+            <button onClick={() => onDelete(task.id)} style={{
+              background: "none", border: "none", cursor: "pointer", padding: 4,
+              color: "#C5C0B8", fontSize: 18, lineHeight: 1, flexShrink: 0,
+            }} title="Delete task">×</button>
+          </div>
+        </div>
+      );
+    }
+
+    function AddTaskModal({ onAdd, onClose }) {
+      const [name, setName] = useState("");
+      const [deadline, setDeadline] = useState("");
+      const [estimatedTime, setEstimatedTime] = useState(30);
+      const [priority, setPriority] = useState("medium");
+      const [category, setCategory] = useState("school");
+      const inputRef = useRef(null);
+      useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
+
+      const handleSubmit = () => {
+        if (!name.trim() || !deadline) return;
+        onAdd({
+          id: generateId(), name: name.trim(), deadline, estimatedTime: Number(estimatedTime),
+          priority, category, completed: false, createdAt: Date.now(),
+        });
+      };
+
+      const inputStyle = {
+        width: "100%", padding: "12px 14px", border: "1px solid #E8E6E1", borderRadius: 10,
+        fontSize: 15, fontFamily: "'DM Sans', sans-serif", background: "#FAFAF8",
+        outline: "none", boxSizing: "border-box", color: "#2C2A25",
+      };
+      const labelStyle = { fontSize: 13, fontWeight: 600, color: "#5A564F", marginBottom: 6, display: "block" };
+
+      return (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(44,42,37,0.4)", display: "flex",
+          alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20,
+          backdropFilter: "blur(4px)",
+        }} onClick={(e) => e.target === e.currentTarget && onClose()}>
+          <div style={{
+            background: "#fff", borderRadius: 20, padding: 28, width: "100%", maxWidth: 440,
+            boxShadow: "0 20px 60px rgba(0,0,0,0.15)", maxHeight: "90vh", overflowY: "auto",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+              <h2 style={{
+                fontSize: 22, fontWeight: 700, color: "#2C2A25", margin: 0,
+                fontFamily: "'Instrument Serif', Georgia, serif",
+              }}>New Task</h2>
+              <button onClick={onClose} style={{
+                background: "none", border: "none", fontSize: 24, color: "#8B8680", cursor: "pointer",
+              }}>×</button>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>What do you need to do?</label>
+              <input ref={inputRef} value={name} onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Finish psych essay" style={inputStyle}
+                onKeyDown={(e) => e.key === "Enter" && handleSubmit()} />
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Deadline</label>
+              <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} style={inputStyle} />
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Estimated time (minutes)</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[15, 30, 60, 90, 120].map((t) => (
+                  <button key={t} onClick={() => setEstimatedTime(t)} style={{
+                    flex: 1, padding: "10px 0",
+                    border: estimatedTime === t ? "2px solid #2C2A25" : "1px solid #E8E6E1",
+                    borderRadius: 10, background: estimatedTime === t ? "#2C2A25" : "#FAFAF8",
+                    color: estimatedTime === t ? "#fff" : "#5A564F", fontSize: 13, fontWeight: 600,
+                    cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                  }}>{formatTime(t)}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Priority</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {Object.entries(PRIORITIES).map(([key, p]) => (
+                  <button key={key} onClick={() => setPriority(key)} style={{
+                    flex: 1, padding: "10px 0",
+                    border: priority === key ? `2px solid ${p.color}` : "1px solid #E8E6E1",
+                    borderRadius: 10, background: priority === key ? p.color : "#FAFAF8",
+                    color: priority === key ? "#fff" : "#5A564F", fontSize: 13, fontWeight: 600,
+                    cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                  }}>{p.label}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginBottom: 24 }}>
+              <label style={labelStyle}>Category</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {Object.entries(CATEGORIES).map(([key, c]) => (
+                  <button key={key} onClick={() => setCategory(key)} style={{
+                    flex: 1, padding: "10px 0",
+                    border: category === key ? `2px solid ${c.color}` : "1px solid #E8E6E1",
+                    borderRadius: 10, background: category === key ? c.color : "#FAFAF8",
+                    color: category === key ? "#fff" : "#5A564F", fontSize: 13, fontWeight: 600,
+                    cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                  }}>{c.label}</button>
+                ))}
+              </div>
+            </div>
+            <button onClick={handleSubmit} disabled={!name.trim() || !deadline} style={{
+              width: "100%", padding: "14px 0",
+              background: !name.trim() || !deadline ? "#D0CCC5" : "#2C2A25",
+              color: "#fff", border: "none", borderRadius: 12, fontSize: 16, fontWeight: 700,
+              cursor: !name.trim() || !deadline ? "not-allowed" : "pointer",
+              fontFamily: "'DM Sans', sans-serif", transition: "background 0.2s ease",
+            }}>Add Task</button>
+          </div>
+        </div>
+      );
+    }
+
+    function ProgressRing({ completed, total }) {
+      const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+      const circumference = 2 * Math.PI * 38;
+      const offset = circumference - (pct / 100) * circumference;
+      return (
+        <div style={{ position: "relative", width: 90, height: 90 }}>
+          <svg width="90" height="90" style={{ transform: "rotate(-90deg)" }}>
+            <circle cx="45" cy="45" r="38" stroke="#E8E6E1" strokeWidth="6" fill="none" />
+            <circle cx="45" cy="45" r="38" stroke="#6B9E5A" strokeWidth="6" fill="none"
+              strokeDasharray={circumference} strokeDashoffset={offset}
+              strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+          </svg>
+          <div style={{
+            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center",
+          }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: "#2C2A25", lineHeight: 1 }}>{pct}%</span>
+            <span style={{ fontSize: 10, color: "#8B8680", marginTop: 2 }}>done</span>
+          </div>
+        </div>
+      );
+    }
+
+    function FocusFlow() {
+      const [tasks, setTasks] = useState(() => loadTasks());
+      const [showModal, setShowModal] = useState(false);
+      const [filter, setFilter] = useState("all");
+      const [dailyHours, setDailyHours] = useState(() => loadHours());
+
+      useEffect(() => { saveTasks(tasks); }, [tasks]);
+      useEffect(() => { saveHours(dailyHours); }, [dailyHours]);
+
+      const addTask = (task) => { setTasks((prev) => [...prev, task]); setShowModal(false); };
+      const toggleTask = (id) => { setTasks((prev) => prev.map((t) => t.id === id ? { ...t, completed: !t.completed } : t)); };
+      const deleteTask = (id) => { setTasks((prev) => prev.filter((t) => t.id !== id)); };
+
+      const filteredTasks = useMemo(() => {
+        let list = [...tasks];
+        if (filter === "active") list = list.filter((t) => !t.completed);
+        else if (filter === "completed") list = list.filter((t) => t.completed);
+        else if (filter in CATEGORIES) list = list.filter((t) => t.category === filter);
+        list.sort((a, b) => getSmartScore(b) - getSmartScore(a));
+        return list;
+      }, [tasks, filter]);
+
+      const activeTasks = tasks.filter((t) => !t.completed);
+      const completedTasks = tasks.filter((t) => t.completed);
+      const totalEstimated = activeTasks.reduce((s, t) => s + t.estimatedTime, 0);
+      const freeMinutes = Math.max(0, dailyHours * 60 - totalEstimated);
+
+      const topTaskId = useMemo(() => {
+        const active = tasks.filter((t) => !t.completed);
+        if (active.length === 0) return null;
+        active.sort((a, b) => getSmartScore(b) - getSmartScore(a));
+        return active[0].id;
+      }, [tasks]);
+
+      const greeting = useMemo(() => {
+        const h = new Date().getHours();
+        if (h < 12) return "Good morning";
+        if (h < 17) return "Good afternoon";
+        return "Good evening";
+      }, []);
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#F5F4F0", fontFamily: "'DM Sans', sans-serif" }}>
+          <div style={{
+            background: "#2C2A25", color: "#fff", padding: "32px 24px 28px", borderRadius: "0 0 28px 28px",
+          }}>
+            <div style={{ maxWidth: 600, margin: "0 auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <div style={{
+                    fontSize: 13, color: "#A09C95", fontWeight: 500, letterSpacing: "1px",
+                    textTransform: "uppercase", marginBottom: 4,
+                  }}>FocusFlow</div>
+                  <h1 style={{
+                    fontSize: 28, fontWeight: 400, margin: 0,
+                    fontFamily: "'Instrument Serif', Georgia, serif",
+                  }}>{greeting} ✦</h1>
+                </div>
+                <ProgressRing completed={completedTasks.length} total={tasks.length} />
+              </div>
+              <div style={{ display: "flex", gap: 16, marginTop: 20, flexWrap: "wrap" }}>
+                <div style={{
+                  background: "rgba(255,255,255,0.08)", borderRadius: 12, padding: "12px 16px", flex: 1, minWidth: 100,
+                }}>
+                  <div style={{ fontSize: 11, color: "#A09C95", marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.5px" }}>Active</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{activeTasks.length}</div>
+                </div>
+                <div style={{
+                  background: "rgba(255,255,255,0.08)", borderRadius: 12, padding: "12px 16px", flex: 1, minWidth: 100,
+                }}>
+                  <div style={{ fontSize: 11, color: "#A09C95", marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.5px" }}>Work left</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{formatTime(totalEstimated)}</div>
+                </div>
+                <div style={{
+                  background: "rgba(107,158,90,0.15)", borderRadius: 12, padding: "12px 16px", flex: 1, minWidth: 100,
+                }}>
+                  <div style={{ fontSize: 11, color: "#8BC78B", marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.5px" }}>Free time</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: "#8BC78B" }}>{formatTime(freeMinutes)}</div>
+                </div>
+              </div>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 12, color: "#A09C95",
+              }}>
+                <span>My day has</span>
+                <select value={dailyHours} onChange={(e) => setDailyHours(Number(e.target.value))} style={{
+                  background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#fff", borderRadius: 6, padding: "2px 6px", fontSize: 12,
+                  fontFamily: "'DM Sans', sans-serif",
+                }}>
+                  {[4, 5, 6, 7, 8, 10, 12, 14, 16].map((h) => (
+                    <option key={h} value={h} style={{ color: "#000" }}>{h}</option>
+                  ))}
+                </select>
+                <span>productive hours</span>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ maxWidth: 600, margin: "0 auto", padding: "20px 16px 100px" }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 20, overflowX: "auto", paddingBottom: 4 }}>
+              {[
+                { key: "all", label: "All" }, { key: "active", label: "Active" },
+                { key: "completed", label: "Done" },
+                ...Object.entries(CATEGORIES).map(([k, v]) => ({ key: k, label: v.label })),
+              ].map((f) => (
+                <button key={f.key} onClick={() => setFilter(f.key)} style={{
+                  padding: "8px 16px", borderRadius: 10, border: "none",
+                  background: filter === f.key ? "#2C2A25" : "#E8E6E1",
+                  color: filter === f.key ? "#fff" : "#5A564F",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+                  fontFamily: "'DM Sans', sans-serif", transition: "all 0.2s ease",
+                }}>{f.label}</button>
+              ))}
+            </div>
+
+            {activeTasks.length > 0 && topTaskId && filter !== "completed" && (
+              <div style={{
+                background: "linear-gradient(135deg, #FEF8EC, #FEF0EC)",
+                borderRadius: 16, padding: "16px 20px", marginBottom: 16, border: "1px solid #F0E0C8",
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#B8860B", marginBottom: 4 }}>
+                  🎯 Focus suggestion
+                </div>
+                <div style={{ fontSize: 14, color: "#5A564F", lineHeight: 1.5 }}>
+                  {activeTasks.some((t) => getDeadlineLabel(t.deadline).urgent)
+                    ? "You have urgent deadlines. Tackle the top task first — it's the highest impact move right now."
+                    : totalEstimated > dailyHours * 60
+                    ? "You've got more work than hours today. Prioritize ruthlessly — start with what's marked above."
+                    : "You're in good shape! Work through your tasks top to bottom — they're already sorted by priority."}
+                </div>
+              </div>
+            )}
+
+            {filteredTasks.length === 0 && (
+              <div style={{ textAlign: "center", padding: "60px 20px", color: "#A09C95" }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>{filter === "completed" ? "🎉" : "✦"}</div>
+                <div style={{
+                  fontSize: 20, fontWeight: 400, color: "#5A564F", marginBottom: 8,
+                  fontFamily: "'Instrument Serif', Georgia, serif",
+                }}>{filter === "completed" ? "No completed tasks yet" : "No tasks yet"}</div>
+                <div style={{ fontSize: 14 }}>
+                  {filter === "completed" ? "Complete some tasks and they'll show up here." : "Add your first task to get started."}
+                </div>
+              </div>
+            )}
+
+            {filteredTasks.map((task) => (
+              <TaskCard key={task.id} task={task} onToggle={toggleTask}
+                onDelete={deleteTask} isTopPick={task.id === topTaskId} />
+            ))}
+          </div>
+
+          <button onClick={() => setShowModal(true)} style={{
+            position: "fixed", bottom: 24, right: 24, width: 60, height: 60,
+            borderRadius: 18, background: "#2C2A25", color: "#fff", border: "none",
+            fontSize: 28, cursor: "pointer", display: "flex", alignItems: "center",
+            justifyContent: "center", boxShadow: "0 8px 24px rgba(44,42,37,0.3)",
+            transition: "transform 0.2s ease", zIndex: 100,
+          }}
+            onMouseEnter={(e) => e.target.style.transform = "scale(1.08)"}
+            onMouseLeave={(e) => e.target.style.transform = "scale(1)"}
+          >+</button>
+
+          {showModal && <AddTaskModal onAdd={addTask} onClose={() => setShowModal(false)} />}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<FocusFlow />);
+  </script>
+</body>
+</html>
